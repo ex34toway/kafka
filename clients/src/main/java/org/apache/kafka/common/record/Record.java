@@ -154,6 +154,7 @@ public final class Record {
         }
     }
 
+    // 写入一条日志记录
     public static void write(Compressor compressor, long crc, byte attributes, long timestamp, byte[] key, byte[] value, int valueOffset, int valueSize) {
         // write crc
         compressor.putInt((int) (crc & 0xffffffffL));

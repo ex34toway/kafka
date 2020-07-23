@@ -15,10 +15,15 @@
 
 import org.ajoberstar.grgit.Grgit
 
+ScalaCompileOptions.metaClass.daemonServer = true
+ScalaCompileOptions.metaClass.fork = true
+ScalaCompileOptions.metaClass.useAnt = false
+ScalaCompileOptions.metaClass.useCompileDaemon = false
+
 buildscript {
   repositories {
-    mavenCentral()
-    jcenter()
+    maven { url 'http://maven.aliyun.com/nexus/content/groups/public/' }
+    jcenter { url 'http://maven.aliyun.com/repository/jcenter' }
   }
   apply from: file('gradle/buildscript.gradle'), to: buildscript
 

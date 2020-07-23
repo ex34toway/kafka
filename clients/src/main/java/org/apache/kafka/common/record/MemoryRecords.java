@@ -97,7 +97,9 @@ public class MemoryRecords implements Records {
         int size = Record.recordSize(key, value);
         compressor.putLong(offset);
         compressor.putInt(size);
+        // 写入数据
         long crc = compressor.putRecord(timestamp, key, value);
+        // 记录写入大小
         compressor.recordWritten(size + Records.LOG_OVERHEAD);
         return crc;
     }

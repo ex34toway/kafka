@@ -224,14 +224,19 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             this.metrics = new Metrics(metricConfig, reporters, time);
             this.partitioner = config.getConfiguredInstance(ProducerConfig.PARTITIONER_CLASS_CONFIG, Partitioner.class);
             long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
+            // 元数据服务
             this.metadata = new Metadata(retryBackoffMs, config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG));
+            // 单个请求传输字节最大值
             this.maxRequestSize = config.getInt(ProducerConfig.MAX_REQUEST_SIZE_CONFIG);
+            // 缓存内存字节大小
             this.totalMemorySize = config.getLong(ProducerConfig.BUFFER_MEMORY_CONFIG);
+            // 压缩类型
             this.compressionType = CompressionType.forName(config.getString(ProducerConfig.COMPRESSION_TYPE_CONFIG));
             /* check for user defined settings.
              * If the BLOCK_ON_BUFFER_FULL is set to true,we do not honor METADATA_FETCH_TIMEOUT_CONFIG.
              * This should be removed with release 0.9 when the deprecated configs are removed.
              */
+            // send 方法阻塞的最长时间: 毫秒
             if (userProvidedConfigs.containsKey(ProducerConfig.BLOCK_ON_BUFFER_FULL_CONFIG)) {
                 log.warn(ProducerConfig.BLOCK_ON_BUFFER_FULL_CONFIG + " config is deprecated and will be removed soon. " +
                         "Please use " + ProducerConfig.MAX_BLOCK_MS_CONFIG);
@@ -257,6 +262,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
              * If the TIME_OUT config is set use that for request timeout.
              * This should be removed with release 0.9
              */
+            // 请求阻塞的最长时间: 毫秒
             if (userProvidedConfigs.containsKey(ProducerConfig.TIMEOUT_CONFIG)) {
                 log.warn(ProducerConfig.TIMEOUT_CONFIG + " config is deprecated and will be removed soon. Please use " +
                         ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
@@ -265,6 +271,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 this.requestTimeoutMs = config.getInt(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
             }
 
+            // 日志记录累积器
             this.accumulator = new RecordAccumulator(config.getInt(ProducerConfig.BATCH_SIZE_CONFIG),
                     this.totalMemorySize,
                     this.compressionType,
@@ -272,8 +279,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     retryBackoffMs,
                     metrics,
                     time);
+            // Broker 服务器地址
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config.getList(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
+            // 元数据更新 服务器地址
             this.metadata.update(Cluster.bootstrap(addresses), time.milliseconds());
+            // 构建通信信道
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config.values());
             NetworkClient client = new NetworkClient(
                     new Selector(config.getLong(ProducerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG), this.metrics, time, "producer", channelBuilder),
@@ -284,6 +294,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     config.getInt(ProducerConfig.SEND_BUFFER_CONFIG),
                     config.getInt(ProducerConfig.RECEIVE_BUFFER_CONFIG),
                     this.requestTimeoutMs, time);
+            // 构建消息发送器
             this.sender = new Sender(client,
                     this.metadata,
                     this.accumulator,
@@ -295,12 +306,15 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     new SystemTime(),
                     clientId,
                     this.requestTimeoutMs);
+            // 创建Kafka发送线程并启动
             String ioThreadName = "kafka-producer-network-thread" + (clientId.length() > 0 ? " | " + clientId : "");
             this.ioThread = new KafkaThread(ioThreadName, this.sender, true);
             this.ioThread.start();
 
+            // 创建错误记录指标
             this.errors = this.metrics.sensor("errors");
 
+            // 设置KV序/反序列器
             if (keySerializer == null) {
                 this.keySerializer = config.getConfiguredInstance(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
                         Serializer.class);
@@ -456,14 +470,21 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         " to class " + producerConfig.getClass(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG).getName() +
                         " specified in value.serializer");
             }
+            // 计算分区
             int partition = partition(record, serializedKey, serializedValue, metadata.fetch());
+            // 序列化后的大小
             int serializedSize = Records.LOG_OVERHEAD + Record.recordSize(serializedKey, serializedValue);
+            // 校验序列化后的大小
             ensureValidRecordSize(serializedSize);
+            // 构建TopicPartition对象
             tp = new TopicPartition(record.topic(), partition);
+            // 记录生成日志，默认使用当前时间
             long timestamp = record.timestamp() == null ? time.milliseconds() : record.timestamp();
             log.trace("Sending record {} with callback {} to topic {} partition {}", record, callback, record.topic(), partition);
             // producer callback will make sure to call both 'callback' and interceptor callback
+            // 回调接口
             Callback interceptCallback = this.interceptors == null ? callback : new InterceptorCallback<>(callback, this.interceptors, tp);
+            // 把日志记录添加到日志记录累积器
             RecordAccumulator.RecordAppendResult result = accumulator.append(tp, timestamp, serializedKey, serializedValue, interceptCallback, remainingWaitMs);
             if (result.batchIsFull || result.newBatchCreated) {
                 log.trace("Waking up the sender since topic {} partition {} is either full or getting a new batch", record.topic(), partition);
@@ -515,7 +536,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         // add topic to metadata topic list if it is not there already.
         if (!this.metadata.containsTopic(topic))
             this.metadata.add(topic);
-
+        // 检查topic对应的分区信息
         if (metadata.fetch().partitionsForTopic(topic) != null)
             return 0;
 
@@ -523,16 +544,22 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         long remainingWaitMs = maxWaitMs;
         while (metadata.fetch().partitionsForTopic(topic) == null) {
             log.trace("Requesting metadata update for topic {}.", topic);
+            // 开启元数据更新
             int version = metadata.requestUpdate();
+            // 唤醒sender对应的网络
             sender.wakeup();
+            // 更新元数据, 如果超过 remainingWaitMs 将 throw 异常中断本次更新请求
             metadata.awaitUpdate(version, remainingWaitMs);
             long elapsed = time.milliseconds() - begin;
+            // 超时
             if (elapsed >= maxWaitMs)
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
+            // 如果没有授权
             if (metadata.fetch().unauthorizedTopics().contains(topic))
                 throw new TopicAuthorizationException(topic);
             remainingWaitMs = maxWaitMs - elapsed;
         }
+        // 总共耗时
         return time.milliseconds() - begin;
     }
 

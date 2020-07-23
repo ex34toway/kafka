@@ -165,6 +165,7 @@ public final class RecordAccumulator {
         // abortIncompleteBatches().
         appendsInProgress.incrementAndGet();
         try {
+            // 根据TopicPartition获得 Deque 容器对象
             // check if we have an in-progress batch
             Deque<RecordBatch> dq = getOrCreateDeque(tp);
             synchronized (dq) {
@@ -175,6 +176,7 @@ public final class RecordAccumulator {
                     return appendResult;
             }
 
+            // 分配一个新的 RecordBatch
             // we don't have an in-progress record batch try to allocate a new batch
             int size = Math.max(this.batchSize, Records.LOG_OVERHEAD + Record.recordSize(key, value));
             log.trace("Allocating a new {} byte message buffer for topic {} partition {}", size, tp.topic(), tp.partition());
@@ -184,13 +186,16 @@ public final class RecordAccumulator {
                 if (closed)
                     throw new IllegalStateException("Cannot send after the producer is closed.");
 
+                // 再次检查是否有RecordBatch被创建
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, callback, dq);
                 if (appendResult != null) {
                     // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
                     free.deallocate(buffer);
                     return appendResult;
                 }
+                // 构建内存日志记录池
                 MemoryRecords records = MemoryRecords.emptyRecords(buffer, compression, this.batchSize);
+                // 构建第一个 RecordBatch
                 RecordBatch batch = new RecordBatch(tp, records, time.milliseconds());
                 FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, callback, time.milliseconds()));
 
