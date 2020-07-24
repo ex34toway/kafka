@@ -247,6 +247,7 @@ public final class RecordAccumulator {
                         RecordBatch batch = batchIterator.next();
                         boolean isFull = batch != lastBatch || batch.records.isFull();
                         // check if the batch is expired
+                        // 检查RecordBatch是否过期
                         if (batch.maybeExpire(requestTimeout, retryBackoffMs, now, this.lingerMs, isFull)) {
                             expiredBatches.add(batch);
                             count++;
@@ -254,6 +255,7 @@ public final class RecordAccumulator {
                             deallocate(batch);
                         } else {
                             // Stop at the first batch that has not expired.
+                            // 因为第一个没有过期,在第一个之后添加的日志记录肯定也没有过期,直接跳出循环
                             break;
                         }
                     }
@@ -311,6 +313,7 @@ public final class RecordAccumulator {
             TopicPartition part = entry.getKey();
             Deque<RecordBatch> deque = entry.getValue();
 
+            // 获得分区首领节点信息
             Node leader = cluster.leaderFor(part);
             if (leader == null) {
                 unknownLeadersExist = true;
@@ -378,11 +381,13 @@ public final class RecordAccumulator {
             List<PartitionInfo> parts = cluster.partitionsForNode(node.id());
             List<RecordBatch> ready = new ArrayList<>();
             /* to make starvation less likely this loop doesn't start at 0 */
+            // 为了减少饥饿，for循环从非0位置开始
             int start = drainIndex = drainIndex % parts.size();
             do {
                 PartitionInfo part = parts.get(drainIndex);
                 TopicPartition tp = new TopicPartition(part.topic(), part.partition());
                 // Only proceed if the partition has no in-flight batches.
+                // 只处理分区不在飞行的批提交的日志记录
                 if (!muted.contains(tp)) {
                     Deque<RecordBatch> deque = getDeque(new TopicPartition(part.topic(), part.partition()));
                     if (deque != null) {
@@ -391,13 +396,16 @@ public final class RecordAccumulator {
                             if (first != null) {
                                 boolean backoff = first.attempts > 0 && first.lastAttemptMs + retryBackoffMs > now;
                                 // Only drain the batch if it is not during backoff period.
+                                // 只处理非重试的日志记录
                                 if (!backoff) {
+                                    // 大小检查
                                     if (size + first.records.sizeInBytes() > maxSize && !ready.isEmpty()) {
                                         // there is a rare case that a single batch size is larger than the request size due
                                         // to compression; in this case we will still eventually send this batch in a single
                                         // request
                                         break;
                                     } else {
+                                        // 提取批日志记录
                                         RecordBatch batch = deque.pollFirst();
                                         batch.records.close();
                                         size += batch.records.sizeInBytes();

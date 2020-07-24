@@ -233,14 +233,19 @@ public class NetworkClient implements KafkaClient {
     @Override
     public void send(ClientRequest request, long now) {
         String nodeId = request.request().destination();
+        // 检查节点是否能发送请求
         if (!canSendRequest(nodeId))
             throw new IllegalStateException("Attempt to send a request to node " + nodeId + " which is not ready.");
+        // 执行发送
         doSend(request, now);
     }
 
     private void doSend(ClientRequest request, long now) {
+        // 更新服务发送时间
         request.setSendTimeMs(now);
+        // 添加到飞行集合
         this.inFlightRequests.add(request);
+        // 发送
         selector.send(request.request());
     }
 

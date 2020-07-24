@@ -228,8 +228,10 @@ public class Selector implements Selectable {
      * @param send The request to send
      */
     public void send(Send send) {
+        // 取得集群所在节点的通信信道
         KafkaChannel channel = channelOrFail(send.destination());
         try {
+            // set写信号给底层的selector对象
             channel.setSend(send);
         } catch (CancelledKeyException e) {
             this.failedSends.add(send.destination());
