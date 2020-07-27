@@ -269,23 +269,29 @@ public class Selector implements Selectable {
         if (timeout < 0)
             throw new IllegalArgumentException("timeout should be >= 0");
 
+        // 清理上一次poll的临时结果
         clear();
 
+        // 是否有正在接收数据的信道 or 有刚刚建立的连接
         if (hasStagedReceives() || !immediatelyConnectedKeys.isEmpty())
             timeout = 0;
 
         /* check ready keys */
         long startSelect = time.nanoseconds();
+        // 执行 select, 返回已经准备好的key值个数
         int readyKeys = select(timeout);
         long endSelect = time.nanoseconds();
         currentTimeNanos = endSelect;
+        // 记录这一次select花费的时间
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds());
 
+        // 如果有事件需要处理 or 有刚刚建立的连接
         if (readyKeys > 0 || !immediatelyConnectedKeys.isEmpty()) {
             pollSelectionKeys(this.nioSelector.selectedKeys(), false);
             pollSelectionKeys(immediatelyConnectedKeys, true);
         }
 
+        // 将stage接收的数据添加 completedReceives 列表
         addToCompletedReceives();
 
         long endIo = time.nanoseconds();
@@ -307,6 +313,7 @@ public class Selector implements Selectable {
             try {
 
                 /* complete any connections that have finished their handshake (either normally or immediately) */
+                // 连接是刚刚建立 or 连接建立已经完成
                 if (isImmediatelyConnected || key.isConnectable()) {
                     if (channel.finishConnect()) {
                         this.connected.add(channel.id());
@@ -316,17 +323,21 @@ public class Selector implements Selectable {
                 }
 
                 /* if channel is not ready finish prepare */
+                // 如果连接已经建立好, 开始进入准备阶段 ( authentication )
                 if (channel.isConnected() && !channel.ready())
                     channel.prepare();
 
                 /* if channel is ready read from any connections that have readable data */
+                // 如果连接已经准备好 并且 已经有可读的数据
                 if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
                     NetworkReceive networkReceive;
+                    // 读取服务器返回数据, 并添加到Stage队列
                     while ((networkReceive = channel.read()) != null)
                         addToStagedReceives(channel, networkReceive);
                 }
 
                 /* if channel is ready write to any sockets that have space in their buffer and for which we have data */
+                // 如果连接已经准备好 并且 已经有可写的socket
                 if (channel.ready() && key.isWritable()) {
                     Send send = channel.write();
                     if (send != null) {
@@ -336,6 +347,7 @@ public class Selector implements Selectable {
                 }
 
                 /* cancel any defunct sockets */
+                // 关闭已经不存在的连接
                 if (!key.isValid()) {
                     close(channel);
                     this.disconnected.add(channel.id());
