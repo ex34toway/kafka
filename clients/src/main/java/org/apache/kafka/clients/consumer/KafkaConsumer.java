@@ -932,9 +932,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 throw new IllegalArgumentException("Timeout must not be negative");
 
             // poll for new data until the timeout expires
+            // 记录开始时间
             long start = time.milliseconds();
             long remaining = timeout;
             do {
+                // 拉取一次
                 Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollOnce(remaining);
                 if (!records.isEmpty()) {
                     // before returning the fetched records, we can send off the next round of fetches
@@ -944,7 +946,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     // NOTE: since the consumed position has already been updated, we must not allow
                     // wakeups or any other errors to be triggered prior to returning the fetched records.
                     // Additionally, pollNoWakeup does not allow automatic commits to get triggered.
+                    // 向所有的节点发送订阅的topic的Fetch请求
                     fetcher.sendFetches();
+                    // 因为消费偏移已经被更新，此时必须关闭因其他fetched records的原因被唤醒
                     client.pollNoWakeup();
 
                     if (this.interceptors == null)

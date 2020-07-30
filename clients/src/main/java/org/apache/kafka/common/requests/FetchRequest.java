@@ -71,24 +71,33 @@ public class FetchRequest extends AbstractRequest {
      */
     public FetchRequest(int replicaId, int maxWait, int minBytes, Map<TopicPartition, PartitionData> fetchData) {
         super(new Struct(CURRENT_SCHEMA));
+        // 根据topic做groupBy
         Map<String, Map<Integer, PartitionData>> topicsData = CollectionUtils.groupDataByTopic(fetchData);
 
+        // 副本分区ID
         struct.set(REPLICA_ID_KEY_NAME, replicaId);
+        // 允许最大等待时间
         struct.set(MAX_WAIT_KEY_NAME, maxWait);
+        // 节点处理FetchRequest至少返回多少字节，否则将持续等待，直到maxWait
         struct.set(MIN_BYTES_KEY_NAME, minBytes);
         List<Struct> topicArray = new ArrayList<Struct>();
         for (Map.Entry<String, Map<Integer, PartitionData>> topicEntry : topicsData.entrySet()) {
             Struct topicData = struct.instance(TOPICS_KEY_NAME);
+            // topic
             topicData.set(TOPIC_KEY_NAME, topicEntry.getKey());
             List<Struct> partitionArray = new ArrayList<Struct>();
             for (Map.Entry<Integer, PartitionData> partitionEntry : topicEntry.getValue().entrySet()) {
                 PartitionData fetchPartitionData = partitionEntry.getValue();
                 Struct partitionData = topicData.instance(PARTITIONS_KEY_NAME);
+                // 分区ID
                 partitionData.set(PARTITION_KEY_NAME, partitionEntry.getKey());
+                // 分区偏移
                 partitionData.set(FETCH_OFFSET_KEY_NAME, fetchPartitionData.offset);
+                // 允许数据最大的字节
                 partitionData.set(MAX_BYTES_KEY_NAME, fetchPartitionData.maxBytes);
                 partitionArray.add(partitionData);
             }
+            // 分区信息
             topicData.set(PARTITIONS_KEY_NAME, partitionArray.toArray());
             topicArray.add(topicData);
         }

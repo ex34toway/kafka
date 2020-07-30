@@ -106,8 +106,11 @@ public class ConsumerNetworkClient implements Closeable {
                                               AbstractRequest request) {
         long now = time.milliseconds();
         RequestFutureCompletionHandler future = new RequestFutureCompletionHandler();
+        // 构建网络层请求头
         RequestHeader header = client.nextRequestHeader(api);
+        // 构建RequestSend对象
         RequestSend send = new RequestSend(node.idString(), header, request.toStruct());
+        // 添加到未发送集合
         put(node, new ClientRequest(now, true, send, future));
         return future;
     }
@@ -216,28 +219,35 @@ public class ConsumerNetworkClient implements Closeable {
 
     private void poll(long timeout, long now, boolean executeDelayedTasks) {
         // send all the requests we can send now
+        // 尝试发送待发送的请求
         trySend(now);
 
         // ensure we don't poll any longer than the deadline for
         // the next scheduled task
         timeout = Math.min(timeout, delayedTasks.nextTimeout(now));
+        // 执行selector轮询
         clientPoll(timeout, now);
         now = time.milliseconds();
 
         // handle any disconnects by failing the active requests. note that disconnects must
         // be checked immediately following poll since any subsequent call to client.ready()
         // will reset the disconnect status
+        // 检查因请求失败导致的连接断开
+        // 因为随后的client.ready会重置disconnect的状态
         checkDisconnects(now);
 
         // execute scheduled tasks
-        if (executeDelayedTasks)
+        // 执行延时任务
+        if (executeDelayedTasks) {
             delayedTasks.poll(now);
+        }
 
         // try again to send requests since buffer space may have been
         // cleared or a connect finished in the poll
         trySend(now);
 
         // fail requests that couldn't be sent if they have expired
+        // 处理发送失败
         failExpiredRequests(now);
     }
 
@@ -296,8 +306,10 @@ public class ConsumerNetworkClient implements Closeable {
             if (client.connectionFailed(node)) {
                 // Remove entry before invoking request callback to avoid callbacks handling
                 // coordinator failures traversing the unsent list again.
+                // 先移除未发送的请求避免处理coordinator失败的时候再次被迭代
                 iterator.remove();
                 for (ClientRequest request : requestEntry.getValue()) {
+                    // 执行回调
                     RequestFutureCompletionHandler handler =
                             (RequestFutureCompletionHandler) request.callback();
                     handler.onComplete(new ClientResponse(request, now, true, null));

@@ -127,14 +127,17 @@ public class Fetcher<K, V> {
     public void sendFetches() {
         for (Map.Entry<Node, FetchRequest> fetchEntry: createFetchRequests().entrySet()) {
             final FetchRequest request = fetchEntry.getValue();
+            // 发送Fetch请求
             client.send(fetchEntry.getKey(), ApiKeys.FETCH, request)
                     .addListener(new RequestFutureListener<ClientResponse>() {
                         @Override
                         public void onSuccess(ClientResponse resp) {
+                            // 请求成功，解析返回数据
                             FetchResponse response = new FetchResponse(resp.responseBody());
                             Set<TopicPartition> partitions = new HashSet<>(response.responseData().keySet());
                             FetchResponseMetricAggregator metricAggregator = new FetchResponseMetricAggregator(sensors, partitions);
 
+                            // 添加到完成Fetch请求集合
                             for (Map.Entry<TopicPartition, FetchResponse.PartitionData> entry : response.responseData().entrySet()) {
                                 TopicPartition partition = entry.getKey();
                                 long fetchOffset = request.fetchData().get(partition).offset;
@@ -142,7 +145,9 @@ public class Fetcher<K, V> {
                                 completedFetches.add(new CompletedFetch(partition, fetchOffset, fetchData, metricAggregator));
                             }
 
+                            // 记录fetch延迟
                             sensors.fetchLatency.record(resp.requestLatencyMs());
+                            // 记录fetch吞吐时间
                             sensors.fetchThrottleTimeSensor.record(response.getThrottleTime());
                         }
 
@@ -478,10 +483,13 @@ public class Fetcher<K, V> {
         }
     }
 
+    // 获取可发起Fetch任务的分区信息
     private Set<TopicPartition> fetchablePartitions() {
         Set<TopicPartition> fetchable = subscriptions.fetchablePartitions();
+        // 已经完成解析的Fetch请求的分区
         if (nextInLineRecords != null && !nextInLineRecords.isEmpty())
             fetchable.remove(nextInLineRecords.partition);
+        // 已经完成Fetch的分区
         for (CompletedFetch completedFetch : completedFetches)
             fetchable.remove(completedFetch.partition);
         return fetchable;
@@ -493,13 +501,16 @@ public class Fetcher<K, V> {
      */
     private Map<Node, FetchRequest> createFetchRequests() {
         // create the fetch info
+        // 获取集群信息
         Cluster cluster = metadata.fetch();
         Map<Node, Map<TopicPartition, FetchRequest.PartitionData>> fetchable = new HashMap<>();
         for (TopicPartition partition : fetchablePartitions()) {
+            // 获取首领分区所在节点
             Node node = cluster.leaderFor(partition);
             if (node == null) {
                 metadata.requestUpdate();
             } else if (this.client.pendingRequestCount(node) == 0) {
+                // 如果没有需要发送的请求落在该节点
                 // if there is a leader and no in-flight requests, issue a new fetch
                 Map<TopicPartition, FetchRequest.PartitionData> fetch = fetchable.get(node);
                 if (fetch == null) {
@@ -507,6 +518,7 @@ public class Fetcher<K, V> {
                     fetchable.put(node, fetch);
                 }
 
+                // 获取消费位置,添加到可以发送fetch任务的集合
                 long position = this.subscriptions.position(partition);
                 fetch.put(partition, new FetchRequest.PartitionData(position, this.fetchSize));
                 log.trace("Added fetch request for partition {} at offset {}", partition, position);
@@ -514,6 +526,7 @@ public class Fetcher<K, V> {
         }
 
         // create the fetches
+        // 创建FetchRequest
         Map<Node, FetchRequest> requests = new HashMap<>();
         for (Map.Entry<Node, Map<TopicPartition, FetchRequest.PartitionData>> entry : fetchable.entrySet()) {
             Node node = entry.getKey();
