@@ -948,7 +948,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     // Additionally, pollNoWakeup does not allow automatic commits to get triggered.
                     // 向所有的节点发送订阅的topic的Fetch请求
                     fetcher.sendFetches();
-                    // 因为消费偏移已经被更新，此时必须关闭因其他fetched records的原因被唤醒
+                    // 因为消费偏移已经被更新，此时必须防止当前消费线程被唤醒. 因为消息已经拉下来了
                     client.pollNoWakeup();
 
                     if (this.interceptors == null)

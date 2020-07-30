@@ -369,7 +369,9 @@ public class ConsumerNetworkClient implements Closeable {
     }
 
     private void clientPoll(long timeout, long now) {
+        // 执行selector轮询
         client.poll(timeout, now);
+        // 检查是否被强制wakeup. 如果是, 将throw WakeupException
         maybeTriggerWakeup();
     }
 
