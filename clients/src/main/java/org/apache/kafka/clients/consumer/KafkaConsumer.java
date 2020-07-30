@@ -975,17 +975,20 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     private Map<TopicPartition, List<ConsumerRecord<K, V>>> pollOnce(long timeout) {
         // ensure we have partitions assigned if we expect to
+        // 检查服务器是否有分区分配给当前消费者消费
         if (subscriptions.partitionsAutoAssigned())
             coordinator.ensurePartitionAssignment();
 
         // fetch positions if we have partitions we're subscribed to that we
         // don't know the offset for
+        // 检查分配的分区偏移是否拉取
         if (!subscriptions.hasAllFetchPositions())
             updateFetchPositions(this.subscriptions.missingFetchPositions());
 
         long now = time.milliseconds();
 
         // execute delayed tasks (e.g. autocommits and heartbeats) prior to fetching records
+        // 执行延迟任务
         client.executeDelayedTasks(now);
 
         // init any new fetches (won't resend pending fetches)
@@ -996,7 +999,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         if (!records.isEmpty())
             return records;
 
+        // 发送FetchRequest
         fetcher.sendFetches();
+        // 执行请求
         client.poll(timeout, now);
         return fetcher.fetchedRecords();
     }
