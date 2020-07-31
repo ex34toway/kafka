@@ -429,6 +429,7 @@ private[kafka] class Processor(val id: Int,
     shutdownComplete()
   }
 
+  // 处理节点发送响应
   private def processNewResponses() {
     var curr = requestChannel.receiveResponse(id)
     while (curr != null) {

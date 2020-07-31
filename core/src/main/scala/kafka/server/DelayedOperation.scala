@@ -46,6 +46,13 @@ import com.yammer.metrics.core.Gauge
  * forceComplete().
  *
  * A subclass of DelayedOperation needs to provide an implementation of both onComplete() and tryComplete().
+ *
+ * 一个准确延时给定的delayMs操作通常是使用场景的。
+ * 比如: 1. 延时ProduceRequest请求配置了acks是可能需要等待的
+ *      2. 延时FetchRequest配置接收至少的数据字节数据，如果没有累积完成，也可能是需要等待的
+ *
+ * 延时操作一旦完成，onComplete方法将会被调用[有且仅有一次调用]。当延时操作完成，isComplete()方法总是会返回true. onComplete()
+ * 方法也可以被forceComplete触发，即使延时操作没有完成，它也会强制在delayMs后执行onComplete方法，而tryComplete
  */
 abstract class DelayedOperation(override val delayMs: Long) extends TimerTask with Logging {
 
@@ -204,19 +211,22 @@ class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: String,
       }
     }
 
+    // 是否成功
     isCompletedByMe = operation synchronized operation.tryComplete()
     if (isCompletedByMe)
       return true
 
     // if it cannot be completed by now and hence is watched, add to the expire queue also
     if (! operation.isCompleted()) {
+      // 添加到过期队列
       timeoutTimer.add(operation)
+      // 如果成功则取消
       if (operation.isCompleted()) {
         // cancel the timer task
         operation.cancel()
       }
     }
-
+    // 已经失败
     false
   }
 

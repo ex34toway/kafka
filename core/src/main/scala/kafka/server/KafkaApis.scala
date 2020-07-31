@@ -324,21 +324,26 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle a produce request
    */
   def handleProducerRequest(request: RequestChannel.Request) {
+    // 强转请求为 ProduceRequest 类型
     val produceRequest = request.body.asInstanceOf[ProduceRequest]
+    // 请求数据大小
     val numBytesAppended = request.header.sizeOf + produceRequest.sizeOf
 
+    // 按是否有相应topic的写权限 分为 有权限请求 无权限请求
     val (authorizedRequestInfo, unauthorizedRequestInfo) = produceRequest.partitionRecords.asScala.partition {
       case (topicPartition, _) => authorize(request.session, Write, new Resource(Topic, topicPartition.topic))
     }
 
     // the callback for sending a produce response
+    // 生产者请求的回调定义
     def sendResponseCallback(responseStatus: Map[TopicPartition, PartitionResponse]) {
-
+      // 合并之前 无权限的topic响应
       val mergedResponseStatus = responseStatus ++ unauthorizedRequestInfo.mapValues(_ =>
         new PartitionResponse(Errors.TOPIC_AUTHORIZATION_FAILED.code, -1, Message.NoTimestamp))
 
       var errorInResponse = false
 
+      // 检查是否有错误发生
       mergedResponseStatus.foreach { case (topicPartition, status) =>
         if (status.errorCode != Errors.NONE.code) {
           errorInResponse = true
@@ -351,6 +356,8 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
 
       def produceResponseCallback(delayTimeMs: Int) {
+        // 如果生产者的acks为0，即不需要处理节点确认
+        // 但是如果发生错误，处理节点将会关闭当前连接，而生产者再次refresh元数据时将会发现出错
         if (produceRequest.acks == 0) {
           // no operation needed if producer request.required.acks = 0; however, if there is any error in handling
           // the request, since no response is expected by the producer, the server will close socket server so that
@@ -364,12 +371,15 @@ class KafkaApis(val requestChannel: RequestChannel,
                 s"from client id ${request.header.clientId} with ack=0\n" +
                 s"Topic and partition to exceptions: $exceptionsSummary"
             )
+            // 关闭当前连接[异步]
             requestChannel.closeConnection(request.processor, request)
           } else {
             requestChannel.noOperation(request.processor, request)
           }
         } else {
+          // 构造响应头
           val respHeader = new ResponseHeader(request.header.correlationId)
+          // 根据生产者的api版本设置响应体
           val respBody = request.header.apiVersion match {
             case 0 => new ProduceResponse(mergedResponseStatus.asJava)
             case version@(1 | 2) => new ProduceResponse(mergedResponseStatus.asJava, delayTimeMs, version)
@@ -378,13 +388,16 @@ class KafkaApis(val requestChannel: RequestChannel,
             case version => throw new IllegalArgumentException(s"Version `$version` of ProduceRequest is not handled. Code must be updated.")
           }
 
+          // 发送响应
           requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, respHeader, respBody)))
         }
       }
 
       // When this callback is triggered, the remote API call has completed
+      // 生产Api请求处理完成开始时间[发送响应开始]
       request.apiRemoteCompleteTimeMs = SystemTime.milliseconds
 
+      // 统计生产Api使用情况
       quotaManagers(ApiKeys.PRODUCE.id).recordAndMaybeThrottle(
         request.header.clientId,
         numBytesAppended,
@@ -394,14 +407,19 @@ class KafkaApis(val requestChannel: RequestChannel,
     if (authorizedRequestInfo.isEmpty)
       sendResponseCallback(Map.empty)
     else {
+      // 处理有权限的topic的生产请求
+
+      // 是否是管理请求? 管理请求可以生产内部topic, 比如记录分区偏移的 __consumer_offsets topic
       val internalTopicsAllowed = request.header.clientId == AdminUtils.AdminClientId
 
       // Convert ByteBuffer to ByteBufferMessageSet
+      // 将ByteBuffer转换成ByteBufferMessageSet
       val authorizedMessagesPerPartition = authorizedRequestInfo.map {
         case (topicPartition, buffer) => (topicPartition, new ByteBufferMessageSet(buffer))
       }
 
       // call the replica manager to append messages to the replicas
+      // 调用复制器复制消息到各个副本
       replicaManager.appendMessages(
         produceRequest.timeout.toLong,
         produceRequest.acks,
@@ -412,6 +430,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       // if the request is put into the purgatory, it will have a held reference
       // and hence cannot be garbage collected; hence we clear its data here in
       // order to let GC re-claim its memory since it is already appended to log
+      // 清空消息引用，方便GC及时回收
       produceRequest.clearPartitionRecords()
     }
   }
