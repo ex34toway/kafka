@@ -471,19 +471,25 @@ class ReplicaManager(val config: KafkaConfig,
                     fetchMinBytes: Int,
                     fetchInfo: immutable.Map[TopicAndPartition, PartitionFetchInfo],
                     responseCallback: Map[TopicAndPartition, FetchResponsePartitionData] => Unit) {
+    // 是否来自其他副本
     val isFromFollower = replicaId >= 0
+    // 只从首领分区拉取
     val fetchOnlyFromLeader: Boolean = replicaId != Request.DebuggingConsumerId
+    // 只拉取已经提交的消息记录
     val fetchOnlyCommitted: Boolean = ! Request.isValidBrokerId(replicaId)
 
     // read from local logs
+    // 读取日志记录
     val logReadResults = readFromLocalLog(fetchOnlyFromLeader, fetchOnlyCommitted, fetchInfo)
 
     // if the fetch comes from the follower,
     // update its corresponding log end offset
+    // 如果FetchRequest是由副本发起，则更新相应副本的消息偏移
     if(Request.isValidBrokerId(replicaId))
       updateFollowerLogReadResults(replicaId, logReadResults)
 
     // check if this fetch request can be satisfied right away
+    // 检查读取的消息是否有数据、是否有错误发生
     val bytesReadable = logReadResults.values.map(_.info.messageSet.sizeInBytes).sum
     val errorReadingData = logReadResults.values.foldLeft(false) ((errorIncurred, readResult) =>
       errorIncurred || (readResult.errorCode != Errors.NONE.code))
@@ -492,12 +498,17 @@ class ReplicaManager(val config: KafkaConfig,
     //                        2) fetch request does not require any data
     //                        3) has enough data to respond
     //                        4) some error happens while reading data
+    // 立即返回条件：1. FetchRequest不想等待 timeout <= 0
+    //             2. FetchRequest没有获取任何数据
+    //             3. 已经获取了足够的数据
+    //             4. 在读取数据过程中发生了错误
     if(timeout <= 0 || fetchInfo.size <= 0 || bytesReadable >= fetchMinBytes || errorReadingData) {
       val fetchPartitionData = logReadResults.mapValues(result =>
         FetchResponsePartitionData(result.errorCode, result.hw, result.info.messageSet))
       responseCallback(fetchPartitionData)
     } else {
       // construct the fetch results from the read results
+      // 从读得的日志消息结果中构建FetchRequest延时响应
       val fetchPartitionStatus = logReadResults.map { case (topicAndPartition, result) =>
         (topicAndPartition, FetchPartitionStatus(result.info.fetchOffsetMetadata, fetchInfo.get(topicAndPartition).get))
       }
@@ -505,11 +516,13 @@ class ReplicaManager(val config: KafkaConfig,
       val delayedFetch = new DelayedFetch(timeout, fetchMetadata, this, responseCallback)
 
       // create a list of (topic, partition) pairs to use as keys for this delayed fetch operation
+      // 生成 delayed Fetch Keys for Watch
       val delayedFetchKeys = fetchPartitionStatus.keys.map(new TopicPartitionOperationKey(_)).toSeq
 
       // try to complete the request immediately, otherwise put it into the purgatory;
       // this is because while the delayed fetch operation is being created, new requests
       // may arrive and hence make this operation completable.
+      // 尝试完成请求，否则直接抛弃
       delayedFetchPurgatory.tryCompleteElseWatch(delayedFetch, delayedFetchKeys)
     }
   }
@@ -522,6 +535,7 @@ class ReplicaManager(val config: KafkaConfig,
                        readPartitionInfo: Map[TopicAndPartition, PartitionFetchInfo]): Map[TopicAndPartition, LogReadResult] = {
 
     readPartitionInfo.map { case (TopicAndPartition(topic, partition), PartitionFetchInfo(offset, fetchSize)) =>
+      // 统计topic FetchRequest速率
       BrokerTopicStats.getBrokerTopicStats(topic).totalFetchRequestRate.mark()
       BrokerTopicStats.getBrokerAllTopicsStats().totalFetchRequestRate.mark()
 
@@ -536,6 +550,7 @@ class ReplicaManager(val config: KafkaConfig,
             getReplicaOrException(topic, partition)
 
           // decide whether to only fetch committed data (i.e. messages below high watermark)
+          // 是否读取已经提交的日志消息[低水位]
           val maxOffsetOpt = if (readOnlyCommitted)
             Some(localReplica.highWatermark.messageOffset)
           else
@@ -547,6 +562,8 @@ class ReplicaManager(val config: KafkaConfig,
            * where data gets appended to the log immediately after the replica has consumed from it
            * This can cause a replica to always be out of sync.
            */
+          // 读取日志消息偏移 通过LogOffsetMetadata判断副本是否已经同步
+          // 使用日志末尾偏移执行读取可能导致竞争条件, 因为数据刚刚添加就被副本消费, 而这可能导致副本一直处于未同步状态
           val initialLogEndOffset = localReplica.logEndOffset
           val logReadInfo = localReplica.log match {
             case Some(log) =>
@@ -556,8 +573,10 @@ class ReplicaManager(val config: KafkaConfig,
               FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty)
           }
 
+          // 是否读到了消息的末尾
           val readToEndOfLog = initialLogEndOffset.messageOffset - logReadInfo.fetchOffsetMetadata.messageOffset <= 0
 
+          // 消息返回
           LogReadResult(logReadInfo, localReplica.highWatermark.messageOffset, fetchSize, readToEndOfLog, None)
         } catch {
           // NOTE: Failed fetch requests metric is not incremented for known exceptions since it
@@ -576,6 +595,7 @@ class ReplicaManager(val config: KafkaConfig,
             error("Error processing fetch operation on partition [%s,%d] offset %d".format(topic, partition, offset), e)
             LogReadResult(FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty), -1L, fetchSize, false, Some(e))
         }
+      // 构建返回值
       (TopicAndPartition(topic, partition), partitionDataAndOffsetInfo)
     }
   }
@@ -875,10 +895,12 @@ class ReplicaManager(val config: KafkaConfig,
     readResults.foreach { case (topicAndPartition, readResult) =>
       getPartition(topicAndPartition.topic, topicAndPartition.partition) match {
         case Some(partition) =>
+          // 更新副本replicaId的消息偏移
           partition.updateReplicaLogReadResult(replicaId, readResult)
 
           // for producer requests with ack > 1, we need to check
           // if they can be unblocked after some follower's log end offsets have moved
+          // 因为生产请求的ack > 1，当副本消息偏移移动时，节点需要检查topic分区是否可以解锁
           tryCompleteDelayedProduce(new TopicPartitionOperationKey(topicAndPartition))
         case None =>
           warn("While recording the replica LEO, the partition %s hasn't been created.".format(topicAndPartition))

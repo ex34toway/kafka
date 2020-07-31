@@ -171,18 +171,23 @@ class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: String,
   /**
    * Check if the operation can be completed, if not watch it based on the given watch keys
    *
+   * 如果操作 T 可以调用完成，不能则根据给定的key watch it
+   *
    * Note that a delayed operation can be watched on multiple keys. It is possible that
    * an operation is completed after it has been added to the watch list for some, but
    * not all of the keys. In this case, the operation is considered completed and won't
    * be added to the watch list of the remaining keys. The expiration reaper thread will
    * remove this operation from any watcher list in which the operation exists.
    *
+   * 注意: 一个延时操作可以同时被多个key watch. 所以有可以一操作已经去完成，然后它还是被添加到一watch列表
+   * 并被watch. 通常，这个操作不应该被添加到watch列表，但是 "过期收割线程" 将会移除这个已经完成的操作
+   *
    * @param operation the delayed operation to be checked
    * @param watchKeys keys for bookkeeping the operation
    * @return true iff the delayed operations can be completed by the caller
    */
   def tryCompleteElseWatch(operation: T, watchKeys: Seq[Any]): Boolean = {
-    assert(watchKeys.size > 0, "The watch key list can't be empty")
+    assert(watchKeys.nonEmpty, "The watch key list can't be empty")
 
     // The cost of tryComplete() is typically proportional to the number of keys. Calling
     // tryComplete() for each key is going to be expensive if there are many keys. Instead,
