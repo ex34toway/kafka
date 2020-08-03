@@ -522,7 +522,7 @@ class ReplicaManager(val config: KafkaConfig,
       // try to complete the request immediately, otherwise put it into the purgatory;
       // this is because while the delayed fetch operation is being created, new requests
       // may arrive and hence make this operation completable.
-      // 尝试完成请求，否则直接抛弃
+      // 尝试完成请求，否则watch it
       delayedFetchPurgatory.tryCompleteElseWatch(delayedFetch, delayedFetchKeys)
     }
   }

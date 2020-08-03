@@ -455,8 +455,15 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       val convertedPartitionData =
         // Need to down-convert message when consumer only takes magic value 0.
+        // 1.0 版本
         if (fetchRequest.versionId <= 1) {
           responsePartitionData.map { case (tp, data) =>
+
+            // 只需要做向下转换：
+            // 1. topic消息格式版本是通过魔数创建
+            // 2. 消息集合中包含魔数 > 0
+            // 这样是为了尽可能减少消息格式的转换。当使用新的消息格式时，而需要兼容旧的请求时，就需要进行消息转换。
+            // 注意: 如果消息格式变化是因为从高版本兼容低版本的，那么这些消息是不用转换的。比如0.10.0.0之前。
 
             // We only do down-conversion when:
             // 1. The message format version configured for the topic is using magic value > 0, and
@@ -496,12 +503,15 @@ class KafkaApis(val requestChannel: RequestChannel,
 
 
       // When this callback is triggered, the remote API call has completed
+      // api调用完成时间
       request.apiRemoteCompleteTimeMs = SystemTime.milliseconds
 
       // Do not throttle replication traffic
+      // 如果是来自副本，则直接响应，不控制流量
       if (fetchRequest.isFromFollower) {
         fetchResponseCallback(0)
       } else {
+        // 开启控制并可能节流
         quotaManagers(ApiKeys.FETCH.id).recordAndMaybeThrottle(fetchRequest.clientId,
                                                                FetchResponse.responseSize(mergedPartitionData.groupBy(_._1.topic),
                                                                                           fetchRequest.versionId),
@@ -530,6 +540,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     val clientId = request.header.clientId
     val offsetRequest = request.body.asInstanceOf[ListOffsetRequest]
 
+    // 权限检查
     val (authorizedRequestInfo, unauthorizedRequestInfo) = offsetRequest.offsetData.asScala.partition {
       case (topicPartition, _) => authorize(request.session, Describe, new Resource(Topic, topicPartition.topic))
     }
@@ -542,11 +553,13 @@ class KafkaApis(val requestChannel: RequestChannel,
       val (topicPartition, partitionData) = elem
       try {
         // ensure leader exists
+        // 确保首领节点本地存在
         val localReplica = if (offsetRequest.replicaId != ListOffsetRequest.DEBUGGING_REPLICA_ID)
           replicaManager.getLeaderReplicaIfLocal(topicPartition.topic, topicPartition.partition)
         else
           replicaManager.getReplicaOrException(topicPartition.topic, topicPartition.partition)
         val offsets = {
+          // 获取分区偏移
           val allOffsets = fetchOffsets(replicaManager.logManager,
                                         topicPartition,
                                         partitionData.timestamp,
@@ -554,10 +567,13 @@ class KafkaApis(val requestChannel: RequestChannel,
           if (offsetRequest.replicaId != ListOffsetRequest.CONSUMER_REPLICA_ID) {
             allOffsets
           } else {
+            // 获得高水位 如果所取得的日志消息偏移存在大于hw，则需要丢弃 dropWhile _ > hw
+            // [因为fetchOffsets是按偏移降序排列的]
             val hw = localReplica.highWatermark.messageOffset
             if (allOffsets.exists(_ > hw))
               hw +: allOffsets.dropWhile(_ > hw)
             else
+              // 返回所有偏移
               allOffsets
           }
         }
@@ -579,12 +595,15 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     })
 
+    // 构建响应
     val mergedResponseMap = responseMap ++ unauthorizedResponseStatus
 
     val responseHeader = new ResponseHeader(correlationId)
     val response = new ListOffsetResponse(mergedResponseMap.asJava)
 
-    requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, response)))
+    // 发送响应
+    requestChannel.sendResponse(new RequestChannel.Response(request,
+      new ResponseSend(request.connectionId, responseHeader, response)))
   }
 
   def fetchOffsets(logManager: LogManager, topicPartition: TopicPartition, timestamp: Long, maxNumOffsets: Int): Seq[Long] = {
@@ -610,13 +629,17 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     for (i <- 0 until segsArray.length)
       offsetTimeArray(i) = (segsArray(i).baseOffset, segsArray(i).lastModified)
+    // 最后一个元数记录当前节点时间
     if (lastSegmentHasSize)
       offsetTimeArray(segsArray.length) = (log.logEndOffset, SystemTime.milliseconds)
 
+    // 根据请求时间要求类型 ==> 获取 startIndex
     var startIndex = -1
     timestamp match {
+      // 最新的
       case ListOffsetRequest.LATEST_TIMESTAMP =>
         startIndex = offsetTimeArray.length - 1
+      // 最早的
       case ListOffsetRequest.EARLIEST_TIMESTAMP =>
         startIndex = 0
       case _ =>
@@ -631,6 +654,8 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
     }
 
+    // 返回偏移最小值
+    // 拼接返回结果数组
     val retSize = maxNumOffsets.min(startIndex + 1)
     val ret = new Array[Long](retSize)
     for (j <- 0 until retSize) {
@@ -638,6 +663,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       startIndex -= 1
     }
     // ensure that the returned seq is in descending order of offsets
+    // 排序，保证按offsets降序排列
     ret.toSeq.sortBy(-_)
   }
 
@@ -824,6 +850,25 @@ class KafkaApis(val requestChannel: RequestChannel,
     requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, responseHeader, offsetFetchResponse)))
   }
 
+  /**
+   * consumer会在Kafka集群的所有broker中选择一个broker作为consumer group 的coordinator，用于实
+   * 现组成员管理、消费分配方案制定以及提交位移等。
+   *
+   * 上次提交位移(last committed offset): consumer最近一次提交的offset值
+   *
+   * 当前位置(current position): consumer已读取但尚未提交时的位置
+   *
+   * 水位(watermark): 也叫高水位(high watermark)，严格来说它不属于consumer管理的范围，而是属于分区
+   * 日志的概念。对于处于水位之下的所有消息，consumer都是可以读取的，consumer无法读取水位以上的消息。
+   *
+   * 日志终端位移(Log End Offset, LEO): 也称为日志最新位移。同样不属于consumer的范畴，而是属于分区
+   * 日志管辖。它表示了某个分区副本当前保存消息对应的最大的位移值。正常情况下LEO不会比水位值小。事实上，
+   * 只有分区所有副本都保存了某条消息，该分区的leader副本才会向上移动水位值。
+   *
+   * <--------------------------------------------------------
+   *
+   * @param request
+   */
   def handleGroupCoordinatorRequest(request: RequestChannel.Request) {
     val groupCoordinatorRequest = request.body.asInstanceOf[GroupCoordinatorRequest]
     val responseHeader = new ResponseHeader(request.header.correlationId)
